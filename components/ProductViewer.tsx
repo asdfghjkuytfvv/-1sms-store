@@ -12,7 +12,9 @@ function LoadedModel({ url, tint }: { url: string; tint: string }) {
     () => new KTX2Loader().setTranscoderPath("/basis/").detectSupport(gl),
     [gl],
   );
-  const gltf = useGLTF(url, true, true, (loader) => loader.setKTX2Loader(ktx2));
+const gltf = useGLTF(url, true, true, (loader) => {
+  loader.setKTX2Loader(ktx2);
+});
   const scene = useMemo(() => gltf.scene.clone(true), [gltf.scene]);
 
   useEffect(() => {
@@ -28,7 +30,9 @@ function LoadedModel({ url, tint }: { url: string; tint: string }) {
         });
       }
     });
-    return () => ktx2.dispose();
+return () => {
+  ktx2.dispose();
+};
   }, [scene, tint, ktx2]);
 
   return <primitive object={scene} />;
