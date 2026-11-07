@@ -7,36 +7,38 @@ import {
 
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-let client: S3Client | null = null;
-
 function getStorageConfig() {
-  const required = [
-    "S3_BUCKET",
-    "S3_ACCESS_KEY_ID",
-    "S3_SECRET_ACCESS_KEY",
-    "S3_ENDPOINT",
-  ] as const;
+  const bucket = process.env.S3_BUCKET;
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+  const endpoint = process.env.S3_ENDPOINT;
 
-  for (const key of required) {
-    if (!process.env[key]) {
-      throw new Error(
-        `${key} is required when object storage is used.`
-      );
-    }
+  if (!bucket || !accessKeyId || !secretAccessKey || !endpoint) {
+    return null;
   }
 
   return {
-    bucket: process.env.S3_BUCKET!,
-    endpoint: process.env.S3_ENDPOINT!,
-    accessKeyId: process.env.S3_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+    bucket,
+    accessKeyId,
+    secretAccessKey,
+    endpoint,
     region: process.env.S3_REGION || "auto",
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
   };
 }
 
-function getStorageClient() {
+export function isStorageConfigured(): boolean {
+  return getStorageConfig() !== null;
+}
+
+let client: S3Client | null = null;
+
+function getClient() {
   const config = getStorageConfig();
+
+  if (!config) {
+    throw new Error("S3 storage is not configured.");
+  }
 
   if (!client) {
     client = new S3Client({
@@ -61,7 +63,7 @@ export async function putObject(
   body: Buffer,
   contentType: string
 ) {
-  const storage = getStorageClient();
+  const storage = getClient();
 
   await storage.client.send(
     new PutObjectCommand({
@@ -78,7 +80,7 @@ export async function signedGetUrl(
   key: string,
   expiresIn = 3600
 ) {
-  const storage = getStorageClient();
+  const storage = getClient();
 
   return getSignedUrl(
     storage.client,
@@ -94,9 +96,7 @@ export function publicAssetUrl(key: string) {
   const base = process.env.S3_PUBLIC_BASE_URL;
 
   if (!base) {
-    throw new Error(
-      "S3_PUBLIC_BASE_URL is required when publishing stored assets."
-    );
+    throw new Error("S3_PUBLIC_BASE_URL is not configured.");
   }
 
   return `${base.replace(/\/$/, "")}/${key
@@ -106,7 +106,7 @@ export function publicAssetUrl(key: string) {
 }
 
 export async function deleteObject(key: string) {
-  const storage = getStorageClient();
+  const storage = getClient();
 
   await storage.client.send(
     new DeleteObjectCommand({
