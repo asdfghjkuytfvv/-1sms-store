@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ModelStatus {
+  IMAGE_ONLY
+  QUEUED
+  GENERATING
+  OPTIMIZING
+  READY
+  FAILED
+}
+
+enum GenerationStatus {
+  QUEUED
+  PREPROCESSING
+  GENERATING
+  DOWNLOADING
+  OPTIMIZING
+  PUBLISHING
+  SUCCEEDED
+  FAILED
+}
+
+model Product {
+  id          String      @id @default(cuid())
+  slug        String      @unique
+  name        String
+  description String      @default("")
+  category    String      @default("General")
+  priceIqd    Int
+  inventory   Int         @default(0)
+  imageUrl    String?
+  imageKey    String?
+  modelUrl    String?
+  modelKey    String?
+  modelStatus ModelStatus @default(IMAGE_ONLY)
+  isPublished Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  jobs        GenerationJob[]
+  reviews     Review[]
+  @@index([isPublished, category])
+}
+
+model GenerationJob {
+  id              String           @id @default(cuid())
+  productId       String
+  product         Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  provider        String           @default("meshy")
+  providerTaskId  String?
+  status          GenerationStatus @default(QUEUED)
+  progress        Int              @default(0)
+  sourceImageKey  String
+  normalizedKey   String?
+  outputModelKey  String?
+  errorMessage    String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  @@index([productId, createdAt])
+  @@index([status])
+}
+
+model Order {
+  id           String   @id @default(cuid())
+  customerName String
+  phone        String
+  address      String
+  city         String
+  totalIqd     Int
+  lines        Json
+  status       String   @default("PENDING_WHATSAPP")
+  createdAt    DateTime @default(now())
+  reviews      Review[]
+}
+
+model Review {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  rating      Int
+  body        String
+  createdAt   DateTime @default(now())
+  @@unique([orderId, productId])
+}
