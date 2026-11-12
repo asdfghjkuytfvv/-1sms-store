@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { readResponseBuffer } from "@/lib/http/response-body";
 
 export async function preprocessProductImage(input: Buffer) {
   let source = input;
@@ -15,8 +16,8 @@ export async function preprocessProductImage(input: Buffer) {
       body: form,
       signal: AbortSignal.timeout(90_000),
     });
-    if (!response.ok) throw new Error(`Background removal failed (${response.status}): ${await response.text()}`);
-    source = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) throw new Error(`Background removal failed (${response.status}).`);
+    source = await readResponseBuffer(response, 20 * 1024 * 1024);
   }
 
   return sharp(source, { limitInputPixels: 40_000_000 })

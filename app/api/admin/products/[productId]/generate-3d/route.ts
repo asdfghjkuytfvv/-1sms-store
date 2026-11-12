@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
-import { putObject, isStorageConfigured } from "@/lib/storage";
-import { generationQueue } from "@/lib/queue";
-import { requireAdminRequest } from "@/lib/auth/admin";
+import { isStorageConfigured, putObject } from "@/lib/storage";
+import { getGenerationQueue, isRedisConfigured } from "@/lib/queue";
+import { authorizeAdminRequest, RATE_LIMIT_POLICIES } from "@/lib/security/rate-limit";
+import { hasSameOrigin, readMultipartFormData } from "@/lib/http/request-body";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const MAX_BYTES = 20 * 1024 * 1024;
+const MAX_BODY_BYTES = MAX_BYTES + 256 * 1024;
 
 const MIME_TYPES = new Map<string, string>([
   ["image/jpeg", "jpg"],
@@ -43,7 +45,7 @@ function hasValidSignature(bytes: Buffer, mime: string): boolean {
 }
 
 function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status });
+  return NextResponse.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(
@@ -51,13 +53,12 @@ export async function POST(
   context: { params: Promise<{ productId: string }> }
 ) {
   try {
-    // التحقق من تسجيل دخول المدير
-    if (!requireAdminRequest(request)) {
-      return jsonError("Unauthorized", 401);
-    }
+    if (!hasSameOrigin(request)) return jsonError("تعذر التحقق من مصدر الطلب.", 403);
+    const denied = await authorizeAdminRequest(request, RATE_LIMIT_POLICIES.admin3d);
+    if (denied) return denied;
 
     // خدمات 3D اختيارية، ولا توقف المتجر إذا لم تكن مربوطة
-    if (!generationQueue) {
+    if (!isRedisConfigured()) {
       return jsonError(
         "خدمة إنشاء المجسمات ثلاثية الأبعاد غير مفعلة حالياً.",
         503
@@ -73,20 +74,22 @@ export async function POST(
 
     const { productId } = await context.params;
 
-    if (!productId || typeof productId !== "string") {
+    if (!productId || typeof productId !== "string" || productId.length > 160) {
       return jsonError("Product ID is required.", 400);
     }
 
     const product = await db.product.findUnique({
       where: { id: productId },
-      select: { id: true },
+      select: { id: true, modelUrl: true },
     });
 
     if (!product) {
       return jsonError("Product not found.", 404);
     }
 
-    const form = await request.formData();
+    const parsedForm = await readMultipartFormData(request, MAX_BODY_BYTES);
+    if (!parsedForm.ok) return jsonError(parsedForm.error, parsedForm.status);
+    const form = parsedForm.form;
     const file = form.get("image");
 
     if (!(file instanceof File)) {
@@ -118,47 +121,51 @@ export async function POST(
     await putObject(key, bytes, file.type);
 
     // إنشاء مهمة التوليد
-    const job = await db.generationJob.create({
-      data: {
-        productId,
-        sourceImageKey: key,
-        status: "QUEUED",
-        provider: "meshy",
-      },
-    });
+    const job = await db.$transaction(async (tx) => {
+      const createdJob = await tx.generationJob.create({
+        data: {
+          productId,
+          sourceImageKey: key,
+          status: "QUEUED",
+          provider: "meshy",
+        },
+      });
 
-    await db.product.update({
-      where: { id: productId },
-      data: {
-        modelStatus: "QUEUED",
-        imageKey: key,
-      },
+      await tx.product.update({
+        where: { id: productId },
+        data: {
+          ...(product.modelUrl ? {} : { modelStatus: "QUEUED" }),
+          imageKey: key,
+        },
+      });
+      return createdJob;
     });
 
     // إرسال المهمة إلى Redis
     try {
-      await generationQueue.add(
+      await getGenerationQueue().add(
         "generate-product-model",
         { generationJobId: job.id },
         { jobId: job.id }
       );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Queue unavailable.";
+    } catch {
+      const message = "Queue unavailable.";
 
-      await db.generationJob.update({
-        where: { id: job.id },
-        data: {
-          status: "FAILED",
-          errorMessage: message.slice(0, 500),
-        },
-      });
+      await db.$transaction(async (tx) => {
+        await tx.generationJob.update({
+          where: { id: job.id },
+          data: {
+            status: "FAILED",
+            errorMessage: message.slice(0, 500),
+          },
+        });
 
-      await db.product.update({
-        where: { id: productId },
-        data: { modelStatus: "FAILED" },
+        if (!product.modelUrl) {
+          await tx.product.update({
+            where: { id: productId },
+            data: { modelStatus: "FAILED" },
+          });
+        }
       });
 
       return jsonError(
@@ -173,10 +180,10 @@ export async function POST(
         jobId: job.id,
         status: "QUEUED",
       },
-      { status: 202 }
+      { status: 202, headers: { "Cache-Control": "no-store" } }
     );
   } catch (error) {
-    console.error("[generate-3d]", error);
+    console.error("[generate-3d] request failed:", error instanceof Error ? error.name : "UnknownError");
 
     return jsonError(
       "حدث خطأ أثناء معالجة الطلب. تحقق من إعدادات الخدمات.",

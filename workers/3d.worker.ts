@@ -1,14 +1,8 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../lib/queue";
+import { getRedisConnection } from "../lib/queue";
 import { processGeneration } from "./process-3d";
 
-if (!redisConnection) {
-  throw new Error("REDIS_URL is required.");
-}
-
-const connection = redisConnection as NonNullable<
-  typeof redisConnection
->;
+const connection = getRedisConnection();
 
 const worker = new Worker(
   "product-3d-generation",
@@ -29,7 +23,7 @@ worker.on("completed", (job) => {
 });
 
 worker.on("failed", (job, error) => {
-  console.error("Failed:", job?.id, error);
+  console.error("3D job failed:", job?.id, error.name);
 });
 
 worker.on("error", (error) => {
@@ -49,6 +43,10 @@ async function shutdown() {
     console.log("Worker stopped.");
   } catch (error) {
     console.error("Shutdown error:", error);
+    process.exitCode = 1;
+    await connection.quit().catch((closeError) => {
+      console.error("Redis shutdown error:", closeError);
+    });
   }
 }
 

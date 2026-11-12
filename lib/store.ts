@@ -14,7 +14,11 @@ export const useCart = create<CartState>()(persist((set) => ({
   items: [],
   add: (product) => set((state) => {
     const existing = state.items.find((item) => item.product.id === product.id);
-    if (existing) return { items: state.items.map((item) => item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item) };
+    if (existing) {
+      if (existing.quantity >= product.inventory) return state;
+      return { items: state.items.map((item) => item.product.id === product.id ? { ...item, product, quantity: item.quantity + 1 } : item) };
+    }
+    if (product.inventory < 1) return state;
     return { items: [...state.items, { product, quantity: 1 }] };
   }),
   decrement: (productId) => set((state) => ({

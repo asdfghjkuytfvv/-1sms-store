@@ -5,7 +5,7 @@ import { Environment, Float, Stars } from "@react-three/drei";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { Suspense, useRef } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 gsap.registerPlugin(ScrollTrigger);
@@ -23,8 +23,9 @@ function Assembly({ progress }: { progress: React.MutableRefObject<number> }) {
       if (!mesh) return;
       const angle = (i / 6) * Math.PI * 2;
       const spread = 2.4 * (1 - p);
-      const target = new THREE.Vector3(Math.cos(angle) * spread, Math.sin(angle) * spread, (i % 2 ? 1 : -1) * spread * 0.35);
-      mesh.position.lerp(target, 0.09);
+      mesh.position.x += (Math.cos(angle) * spread - mesh.position.x) * 0.09;
+      mesh.position.y += (Math.sin(angle) * spread - mesh.position.y) * 0.09;
+      mesh.position.z += ((i % 2 ? 1 : -1) * spread * 0.35 - mesh.position.z) * 0.09;
       mesh.rotation.x += 0.003 * (i + 1);
       mesh.rotation.y += 0.004 * (i + 1);
     });
@@ -54,7 +55,18 @@ function Assembly({ progress }: { progress: React.MutableRefObject<number> }) {
 export function ScrollExperience() {
   const section = useRef<HTMLElement>(null);
   const progress = useRef(0);
+  const [reducedMotion, setReducedMotion] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   useGSAP(() => {
+    if (reducedMotion) return;
     const tween = gsap.to(progress, {
       current: 1,
       ease: "none",
@@ -66,15 +78,26 @@ export function ScrollExperience() {
       },
     });
     return () => tween.scrollTrigger?.kill();
-  }, { scope: section });
+  }, { scope: section, dependencies: [reducedMotion], revertOnUpdate: true });
+
+  if (reducedMotion) {
+    return (
+      <section className="scrolly reduced-scene" id="experience" aria-label="Cinematic product experience">
+        <div className="scrolly-sticky">
+          <div className="scene-static-object" aria-hidden="true">✳</div>
+          <div className="scrolly-overlay"><div className="scene-label">01 — ENGINEERED TO MOVE</div><h2>More than<br /><span>an object.</span></h2><p>تجربة عرض تفاعلية تمنح المنتج مساحة ليبرز بتفاصيله.</p><div className="scene-foot">1SMS / OBJECT STUDY — 001</div></div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section ref={section} className="scrolly" id="experience" aria-label="Cinematic product experience">
       <div className="scrolly-sticky">
         <Canvas
-          dpr={[1, 1.65]}
+          dpr={[1, 1.35]}
           camera={{ position: [0, 0, 6], fov: 42 }}
-          gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
+          gl={{ antialias: false, alpha: true, powerPreference: "low-power" }}
           fallback={<div className="webgl-fallback">Interactive 3D preview requires WebGL. Explore the product catalog below.</div>}
         >
           <color attach="background" args={["#05070a"]} />

@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactLenis, useLenis } from "lenis/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 
@@ -25,6 +25,15 @@ function SyncScroll() {
 }
 
 export function LenisProvider({ children }: { children: React.ReactNode }) {
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  if (reducedMotion) return <>{children}</>;
   return (
     <ReactLenis root options={{ autoRaf: false, lerp: 0.085, wheelMultiplier: 0.9, touchMultiplier: 1.2 }}>
       <SyncScroll />

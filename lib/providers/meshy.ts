@@ -28,7 +28,7 @@ export async function createImageTo3DTask(imageUrl: string) {
     }),
     signal: AbortSignal.timeout(60_000),
   });
-  if (!response.ok) throw new Error(`Meshy create task failed (${response.status}): ${await response.text()}`);
+  if (!response.ok) throw new Error(`Meshy create task failed (${response.status}).`);
   const data = await response.json() as { result?: string };
   if (!data.result) throw new Error("Meshy response did not include a task ID.");
   return data.result;
@@ -39,7 +39,7 @@ export async function getImageTo3DTask(taskId: string) {
     headers: headers(),
     signal: AbortSignal.timeout(30_000),
   });
-  if (!response.ok) throw new Error(`Meshy task lookup failed (${response.status}): ${await response.text()}`);
+  if (!response.ok) throw new Error(`Meshy task lookup failed (${response.status}).`);
   return {
     task: await response.json() as MeshyTask,
     retryAfterSeconds: Number(response.headers.get("retry-after") || 5),

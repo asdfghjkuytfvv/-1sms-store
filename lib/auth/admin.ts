@@ -17,7 +17,7 @@ export function createAdminSession() {
 }
 
 export function isValidAdminSession(value?: string) {
-  if (!value) return false;
+  if (!value || !process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 32) return false;
   const [expires, supplied] = value.split(".");
   if (!expires || !supplied || Number(expires) < Math.floor(Date.now() / 1000)) return false;
   const expected = signature(expires);

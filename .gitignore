@@ -1,8 +1,11 @@
 node_modules
 .next
+.next-*/
 .env
 .env.*
 !.env.example
 dist
 coverage
 public/basis/*
+*.tsbuildinfo
+.cache/

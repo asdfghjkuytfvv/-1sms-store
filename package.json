@@ -2,6 +2,7 @@
   "name": "1sms-store",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.34.9",
   "engines": { "node": ">=22.0.0" },
   "scripts": {
     "dev": "next dev",
@@ -9,6 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/api.test.ts tests/expiry.test.ts tests/services.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
@@ -33,6 +35,7 @@
     "react-dom": "^19.2.0",
     "sharp": "^0.34.4",
     "three": "^0.181.0",
+    "three-stdlib": "^2.36.1",
     "zod": "^4.0.0",
     "zustand": "^5.0.8"
   },
