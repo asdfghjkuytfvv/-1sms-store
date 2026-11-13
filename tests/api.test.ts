@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test, type TestContext } from "node:test";
+import { performance } from "node:perf_hooks";
 import { scryptSync } from "node:crypto";
 import { NextRequest } from "next/server";
 import { db } from "../lib/db";
@@ -263,6 +264,140 @@ test("checkout enforces its shared Redis rate limit before database access", asy
   assert.equal(keys.length, 1);
   assert.match(keys[0], /^1sms:ratelimit:v1:checkout:[0-9a-f]{64}$/);
   assert.equal(keys[0].includes("203.0.113.8"), false);
+});
+
+test("checkout diagnostics measure limiter wait and API/database work separately with mocks", async (t) => {
+  setEnv(t, "NODE_ENV", "test");
+  setEnv(t, "NEXT_PUBLIC_STORE_WHATSAPP", "9647000000000");
+  const expectedLimiterDelayMs = 35;
+  const expectedTransactionDelayMs = 45;
+  let limiterMs = 0;
+  let transactionMs = 0;
+  setRateLimitStoreForTests({ consume: async () => {
+    const startedAt = performance.now();
+    await new Promise<void>((resolve) => setTimeout(resolve, expectedLimiterDelayMs));
+    limiterMs = performance.now() - startedAt;
+    return { count: 1, ttlMs: 60_000 };
+  } });
+  t.after(() => setRateLimitStoreForTests(undefined));
+  const state = installCheckoutDatabase(t, [{ id: "p1", slug: "item", name: "Item", priceIqd: 2500, inventory: 3, isPublished: true }]);
+  const transaction = db.$transaction as unknown as (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+  replace(t, db, "$transaction", async (callback: (tx: unknown) => Promise<unknown>) => {
+    const startedAt = performance.now();
+    await new Promise<void>((resolve) => setTimeout(resolve, expectedTransactionDelayMs));
+    try {
+      return await transaction(callback);
+    } finally {
+      transactionMs = performance.now() - startedAt;
+    }
+  });
+
+  const totalStartedAt = performance.now();
+  const response = await createOrder(checkoutRequest());
+  const totalMs = performance.now() - totalStartedAt;
+  const apiAfterLimiterMs = totalMs - limiterMs;
+  const apiOutsideTransactionMs = apiAfterLimiterMs - transactionMs;
+
+  assert.equal(response.status, 201);
+  assert.ok(limiterMs >= expectedLimiterDelayMs);
+  assert.ok(transactionMs >= expectedTransactionDelayMs);
+  assert.ok(totalMs + 5 >= limiterMs + transactionMs);
+  assert.equal(state.orders.size, 1);
+  assert.equal(state.products.get("p1")?.inventory, 2);
+  if (process.env.CHECKOUT_TIMING_DIAGNOSTICS === "1") {
+    console.info("checkout_timing_mock_ms=" + JSON.stringify({
+      redisLimiter: Number(limiterMs.toFixed(1)),
+      apiAfterLimiter: Number(apiAfterLimiterMs.toFixed(1)),
+      databaseTransaction: Number(transactionMs.toFixed(1)),
+      apiOutsideTransaction: Number(apiOutsideTransactionMs.toFixed(1)),
+      total: Number(totalMs.toFixed(1)),
+    }));
+  }
+});
+
+test("checkout fails closed on a Redis timeout and retry reserves stock once", async (t) => {
+  setEnv(t, "NODE_ENV", "production");
+  setEnv(t, "AUTH_SECRET", testAuthSecret);
+  setEnv(t, "RATE_LIMIT_TRUSTED_IP_HEADER", "x-real-ip");
+  setEnv(t, "NEXT_PUBLIC_STORE_WHATSAPP", "9647000000000");
+  const state = installCheckoutDatabase(t, [{ id: "p1", slug: "item", name: "Item", priceIqd: 2500, inventory: 3, isPublished: true }]);
+  const request = () => jsonRequest("/api/orders", "POST", baseCheckout, {
+    origin: "http://localhost", "idempotency-key": checkoutKey1, "x-real-ip": "203.0.113.14",
+  });
+  let transactions = 0;
+  let lookups = 0;
+  const transaction = db.$transaction as unknown as (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+  replace(t, db, "$transaction", (callback: (tx: unknown) => Promise<unknown>) => {
+    transactions += 1;
+    return transaction(callback);
+  });
+  const findOrder = db.order.findUnique as unknown as (args: unknown) => Promise<unknown>;
+  replace(t, db.order, "findUnique", (args: unknown) => {
+    lookups += 1;
+    return findOrder(args);
+  });
+  setRateLimitStoreForTests({ consume: async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 2700));
+    return { count: 1, ttlMs: 60_000 };
+  } });
+  t.after(() => setRateLimitStoreForTests(undefined));
+
+  const startedAt = performance.now();
+  const timedOut = await createOrder(request());
+  const timeoutMs = performance.now() - startedAt;
+  assert.equal(timedOut.status, 503);
+  assert.equal(transactions, 0);
+  assert.equal(lookups, 0);
+  assert.equal(state.orders.size, 0);
+  assert.equal(state.products.get("p1")?.inventory, 3);
+  if (process.env.CHECKOUT_TIMING_DIAGNOSTICS === "1") {
+    console.info("checkout_redis_timeout_ms=" + Number(timeoutMs.toFixed(1)));
+  }
+
+  setRateLimitStoreForTests({ consume: async () => ({ count: 1, ttlMs: 60_000 }) });
+  const accepted = await createOrder(request());
+  const replay = await createOrder(request());
+  assert.equal(accepted.status, 201);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.headers.get("idempotency-replayed"), "true");
+  assert.equal(transactions, 1);
+  assert.equal(state.orders.size, 1);
+  assert.equal(state.products.get("p1")?.inventory, 2);
+});
+
+test("checkout fails closed on Redis disconnection and retry reserves stock once", async (t) => {
+  setEnv(t, "NODE_ENV", "production");
+  setEnv(t, "AUTH_SECRET", testAuthSecret);
+  setEnv(t, "RATE_LIMIT_TRUSTED_IP_HEADER", "x-real-ip");
+  setEnv(t, "NEXT_PUBLIC_STORE_WHATSAPP", "9647000000000");
+  const state = installCheckoutDatabase(t, [{ id: "p1", slug: "item", name: "Item", priceIqd: 2500, inventory: 3, isPublished: true }]);
+  let transactions = 0;
+  const transaction = db.$transaction as unknown as (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+  replace(t, db, "$transaction", (callback: (tx: unknown) => Promise<unknown>) => {
+    transactions += 1;
+    return transaction(callback);
+  });
+  setRateLimitStoreForTests({ consume: async () => { throw new Error("simulated Redis disconnect"); } });
+  t.after(() => setRateLimitStoreForTests(undefined));
+
+  const request = () => jsonRequest("/api/orders", "POST", baseCheckout, {
+    origin: "http://localhost", "idempotency-key": checkoutKey2, "x-real-ip": "203.0.113.15",
+  });
+  const disconnected = await createOrder(request());
+  assert.equal(disconnected.status, 503);
+  assert.equal(transactions, 0);
+  assert.equal(state.orders.size, 0);
+  assert.equal(state.products.get("p1")?.inventory, 3);
+
+  setRateLimitStoreForTests({ consume: async () => ({ count: 1, ttlMs: 60_000 }) });
+  const accepted = await createOrder(request());
+  const replay = await createOrder(request());
+  assert.equal(accepted.status, 201);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.headers.get("idempotency-replayed"), "true");
+  assert.equal(transactions, 1);
+  assert.equal(state.orders.size, 1);
+  assert.equal(state.products.get("p1")?.inventory, 2);
 });
 
 test("storefront page is throttled before its server component queries the catalog", async (t) => {

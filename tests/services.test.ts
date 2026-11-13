@@ -12,6 +12,7 @@ import { CHECKOUT_INTENT_STORAGE_KEY, clearCheckoutIntent, getOrCreateCheckoutIn
 import { readJsonBody, readMultipartFormData } from "../lib/http/request-body";
 import { readResponseBuffer } from "../lib/http/response-body";
 import { processGeneration, type GenerationDependencies } from "../workers/process-3d";
+import { releaseCheckoutSubmitLock, tryAcquireCheckoutSubmitLock } from "../lib/orders/checkout-submit-lock";
 
 function setEnv(t: TestContext, key: string, value: string | undefined) {
   const previous = process.env[key];
@@ -132,6 +133,32 @@ test("checkout intent persists only the UUID key for retries without customer da
   assert.equal(values.get(CHECKOUT_INTENT_STORAGE_KEY), changed.key);
   clearCheckoutIntent(storage, changed.key);
   assert.equal(values.has(CHECKOUT_INTENT_STORAGE_KEY), false);
+});
+
+test("checkout submit lock rejects a duplicate while the order request is pending", async () => {
+  const lock = { current: false };
+  let finishRequest!: () => void;
+  const pendingRequest = new Promise<void>((resolve) => { finishRequest = resolve; });
+  let requestCount = 0;
+  const submit = async () => {
+    if (!tryAcquireCheckoutSubmitLock(lock)) return false;
+    requestCount++;
+    try {
+      await pendingRequest;
+      return true;
+    } finally {
+      releaseCheckoutSubmitLock(lock);
+    }
+  };
+
+  const first = submit();
+  assert.equal(await submit(), false);
+  assert.equal(requestCount, 1);
+  finishRequest();
+  assert.equal(await first, true);
+  assert.equal(await submit(), true);
+  assert.equal(requestCount, 2);
+  assert.equal(lock.current, false);
 });
 
 test("JSON and multipart readers enforce streaming byte limits", async () => {

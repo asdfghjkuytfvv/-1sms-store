@@ -4,8 +4,17 @@ import { useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useCart } from "@/lib/store";
 import { clearCheckoutIntent, getOrCreateCheckoutIntent, type CheckoutIntent, type CheckoutIntentStorage } from "@/lib/orders/client-idempotency";
+import { releaseCheckoutSubmitLock, tryAcquireCheckoutSubmitLock } from "@/lib/orders/checkout-submit-lock";
 
 const FREE_SHIPPING_IQD = 50000;
+
+type CheckoutPayload = {
+  customerName: string;
+  phone: string;
+  city: string;
+  address: string;
+  items: Array<{ productId: string; quantity: number }>;
+};
 
 export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [customerName, setCustomerName] = useState("");
@@ -15,24 +24,14 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const fallbackIntent = useRef<CheckoutIntent | null>(null);
+  const submitLock = useRef(false);
   const items = useCart((s) => s.items);
   const add = useCart((s) => s.add);
   const decrement = useCart((s) => s.decrement);
   const clear = useCart((s) => s.clear);
   const total = useMemo(() => items.reduce((sum, item) => sum + item.product.priceIqd * item.quantity, 0), [items]);
   const progress = Math.min(100, (total / FREE_SHIPPING_IQD) * 100);
-  const checkout = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!items.length) return;
-    setSubmitting(true);
-    setStatus("جارٍ التحقق من الأسعار والمخزون وتسجيل الطلب...");
-    const payload = {
-      customerName,
-      phone,
-      city,
-      address,
-      items: items.map(({ product, quantity }) => ({ productId: product.id, quantity })),
-    };
+  const submitCheckout = async (payload: CheckoutPayload) => {
     try {
       let storage: CheckoutIntentStorage | null = null;
       try { storage = window.sessionStorage; } catch { /* In-memory retries still share this intent. */ }
@@ -60,8 +59,26 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "تعذر إتمام الطلب. حاول مرة أخرى.");
     } finally {
+      releaseCheckoutSubmitLock(submitLock);
       setSubmitting(false);
     }
+  };
+
+  const checkout = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!items.length || !tryAcquireCheckoutSubmitLock(submitLock)) return;
+    setSubmitting(true);
+    setStatus("جارٍ التحقق من الأسعار والمخزون وتسجيل الطلب...");
+    const payload: CheckoutPayload = {
+      customerName,
+      phone,
+      city,
+      address,
+      items: items.map(({ product, quantity }) => ({ productId: product.id, quantity })),
+    };
+
+    // Let React paint the loading state before checkout performs storage work or waits on the API.
+    window.requestAnimationFrame(() => { void submitCheckout(payload); });
   };
   return (
     <div className={open ? "drawer-backdrop visible" : "drawer-backdrop"} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -75,7 +92,7 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
           </div>)}
           {!items.length && <p className="empty-state">سلتك فارغة حالياً.</p>}
         </div>
-        <form className="drawer-footer" onSubmit={checkout}>
+        <form className="drawer-footer" onSubmit={checkout} aria-busy={submitting}>
           <div className="subtotal"><span>الإجمالي التقديري</span><b>{total.toLocaleString("en-US")} د.ع</b></div>
           <div className="checkout-fields">
             <label>الاسم<input value={customerName} onChange={(event) => setCustomerName(event.target.value)} autoComplete="name" minLength={2} maxLength={120} required /></label>
